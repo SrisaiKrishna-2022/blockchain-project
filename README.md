@@ -1,1 +1,1 @@
-# blockchain-project
+npm install @supabase/supabase-js
