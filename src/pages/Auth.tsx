@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { User, isAdmin, hasAnyAdmin } from "@/lib/firestore";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +13,7 @@ import { Wallet } from "lucide-react";
 
 const Auth = () => {
   const navigate = useNavigate();
-  const { login, signup, resetPassword } = useAuth();
+  const { login, signup, resetPassword, createUserByAdmin, user } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
 
   // Login state
@@ -23,12 +24,20 @@ const Auth = () => {
   const [signupEmail, setSignupEmail] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
   const [signupName, setSignupName] = useState("");
-  const [signupRole, setSignupRole] = useState<"student" | "admin" | "canteen">("student");
+  const [signupRole, setSignupRole] = useState<User["role"]>("student");
+  const [adminExists, setAdminExists] = useState(false);
 
   // Reset password state
   const [resetEmail, setResetEmail] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+
+  // Check if admin exists
+  useEffect(() => {
+    const checkAdmin = async () => {
+      const hasAdmin = await hasAnyAdmin();
+      setAdminExists(hasAdmin);
+    };
+    checkAdmin();
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,8 +47,26 @@ const Auth = () => {
     
     if (result.success) {
       toast.success("Logged in successfully");
-      // Navigate based on role will be handled by the dashboard redirect
-      navigate("/");
+      // Get user role from the result directly
+      const userRole = result.user?.role;
+      console.log("Login successful, user role:", userRole);
+      
+      if (!userRole) {
+        console.error("No user role found after login");
+        toast.error("Error loading user data");
+        return;
+      }
+
+      if (userRole === "admin") {
+        console.log("Navigating to admin dashboard");
+        navigate("/admin");
+      } else if (userRole === "canteen") {
+        console.log("Navigating to canteen dashboard");
+        navigate("/canteen");
+      } else {
+        console.log("Navigating to student dashboard");
+        navigate("/student");
+      }
     } else {
       toast.error(result.error || "Login failed");
     }
@@ -51,40 +78,71 @@ const Auth = () => {
     e.preventDefault();
     setIsLoading(true);
 
-    const result = await signup(signupEmail, signupPassword, signupName, signupRole);
-    
-    if (result.success) {
-      toast.success("Account created successfully");
-      navigate("/");
-    } else {
-      toast.error(result.error || "Signup failed");
-    }
+    try {
+      if (signupRole === "admin") {
+        if (adminExists) {
+          // If admin exists, check if current user is admin
+          if (!user?.id) {
+            toast.error("Please log in as an admin to create additional admin accounts.");
+            return;
+          }
 
-    setIsLoading(false);
+          const isAdminUser = await isAdmin(user.id);
+          if (!isAdminUser) {
+            toast.error("Only admins can create additional admin accounts.");
+            return;
+          }
+
+          // Use admin-specific creation method for additional admins
+          const { success, error } = await createUserByAdmin(signupEmail, signupPassword, signupName, signupRole);
+          if (success) {
+            console.log("Created additional admin account");
+            toast.success("Admin account created successfully");
+            navigate(`/${signupRole}`);
+          } else {
+            toast.error(error || "Failed to create admin account");
+          }
+        } else {
+          console.log("Creating first admin account");
+          // First admin signup - use regular signup but with admin role
+          const { success, error } = await signup(signupEmail, signupPassword, signupName, "admin");
+          if (success) {
+            console.log("First admin account created successfully");
+            toast.success("Admin account created successfully");
+            // Wait briefly for Firestore to update
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            navigate("/admin");
+          } else {
+            console.error("Failed to create first admin:", error);
+            toast.error(error || "Failed to create admin account");
+          }
+        }
+      } else {
+        // Regular user signup
+        const { success, error } = await signup(signupEmail, signupPassword, signupName, signupRole);
+        if (success) {
+          toast.success("Account created successfully");
+          navigate(`/${signupRole}`);
+        } else {
+          toast.error(error || "Failed to create account");
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.message || "An error occurred");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleResetPassword = async (e: React.FormEvent) => {
+    const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (newPassword !== confirmPassword) {
-      toast.error("Passwords do not match");
-      return;
-    }
-
-    if (newPassword.length < 6) {
-      toast.error("Password must be at least 6 characters");
-      return;
-    }
-
     setIsLoading(true);
 
-    const result = await resetPassword(resetEmail, newPassword);
+    const result = await resetPassword(resetEmail);
     
     if (result.success) {
-      toast.success("Password reset successfully");
+      toast.success("Password reset email sent. Check your inbox.");
       setResetEmail("");
-      setNewPassword("");
-      setConfirmPassword("");
     } else {
       toast.error(result.error || "Password reset failed");
     }
@@ -186,10 +244,15 @@ const Auth = () => {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="student">Student</SelectItem>
-                      <SelectItem value="admin">Admin</SelectItem>
+                      {!adminExists && <SelectItem value="admin">Admin</SelectItem>}
                       <SelectItem value="canteen">Canteen</SelectItem>
                     </SelectContent>
                   </Select>
+                  {adminExists && signupRole === "admin" && (
+                    <p className="mt-1 text-sm text-red-500">
+                      An admin already exists. Please contact them to create additional admin accounts.
+                    </p>
+                  )}
                 </div>
                 <Button type="submit" className="w-full" disabled={isLoading}>
                   {isLoading ? "Creating account..." : "Sign Up"}
@@ -197,7 +260,7 @@ const Auth = () => {
               </form>
             </TabsContent>
 
-            <TabsContent value="reset">
+                        <TabsContent value="reset">
               <form onSubmit={handleResetPassword} className="space-y-4">
                 <div>
                   <Label htmlFor="reset-email">Email</Label>
@@ -210,30 +273,11 @@ const Auth = () => {
                     required
                   />
                 </div>
-                <div>
-                  <Label htmlFor="new-password">New Password</Label>
-                  <Input
-                    id="new-password"
-                    type="password"
-                    placeholder="••••••••"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="confirm-password">Confirm Password</Label>
-                  <Input
-                    id="confirm-password"
-                    type="password"
-                    placeholder="••••••••"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    required
-                  />
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  Enter your email address and we'll send you a link to reset your password.
+                </p>
                 <Button type="submit" className="w-full" disabled={isLoading}>
-                  {isLoading ? "Resetting..." : "Reset Password"}
+                  {isLoading ? "Sending..." : "Send Reset Email"}
                 </Button>
               </form>
             </TabsContent>
@@ -241,7 +285,7 @@ const Auth = () => {
         </Card>
 
         <p className="mt-4 text-center text-sm text-muted-foreground">
-          Demo authentication • Data stored locally
+          Authentication backed by Firebase
         </p>
       </div>
     </div>

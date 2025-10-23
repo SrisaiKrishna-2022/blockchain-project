@@ -1,22 +1,38 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  User as FirebaseUser,
+} from "firebase/auth";
+import { auth } from "@/pages/firebaseconfig";
+import {
+  User,
+  saveUser,
+  getUserById,
+  generateNftId,
+  generateWalletAddress,
+} from "@/lib/firestore";
 
-type Role = "student" | "admin" | "canteen";
-
-interface User {
-  id: string;
-  email: string;
-  name: string;
-  role: Role;
-  walletAddress: string;
+interface LoginResult {
+  success: boolean;
+  error?: string;
+  user?: User;
 }
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  signup: (email: string, password: string, name: string, role: Role) => Promise<{ success: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  signup: (email: string, password: string, name: string, role: User["role"]) => Promise<{ success: boolean; error?: string }>;
+  // createUserByAdmin: client-side creates a Firestore profile for a new user. In production,
+  // use a Cloud Function with admin privileges to create Auth users without signing out the admin.
+  createUserByAdmin: (email: string, password: string, name: string, role: User["role"]) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
-  resetPassword: (email: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  // With Firebase we send a password reset email (so only email is required)
+  resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
   isAuthenticated: boolean;
 }
 
@@ -27,86 +43,139 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Check if user is logged in
-    const storedUser = localStorage.getItem("campusCreditsUser");
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
+    // Subscribe to Firebase auth state
+    const unsub = onAuthStateChanged(auth, async (fbUser: FirebaseUser | null) => {
+      if (!fbUser) {
+        setUser(null);
+        return;
+      }
+
+      // Load profile from Firestore
+      const existingUser = await getUserById(fbUser.uid);
+      if (existingUser) {
+        setUser(existingUser);
+      }
+    });
+
+    return () => unsub();
   }, []);
 
   const generateWalletAddress = () => {
-    return "0x" + Array.from({ length: 40 }, () => 
+    return "0x" + Array.from({ length: 40 }, () =>
       Math.floor(Math.random() * 16).toString(16)
     ).join("");
   };
 
-  const signup = async (email: string, password: string, name: string, role: Role) => {
-    // Get existing users
-    const usersData = localStorage.getItem("campusCreditsUsers");
-    const users = usersData ? JSON.parse(usersData) : [];
-
-    // Check if user already exists
-    if (users.find((u: any) => u.email === email)) {
-      return { success: false, error: "User already exists" };
+  const signup = async (email: string, password: string, name: string, role: User["role"]) => {
+    try {
+      // First create the Firebase auth user
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      
+      // Then create the user profile in Firestore using the Firebase UID
+      const userProfile = {
+        id: cred.user.uid, // Use Firebase UID as document ID
+        email,
+        name,
+        role,
+        nftId: await generateNftId(),
+        walletAddress: generateWalletAddress(),
+        credits: 0,
+      };
+      
+      // Save user with specific ID
+      const newUser = await saveUser(userProfile);
+      setUser(newUser);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || "Signup failed" };
     }
-
-    // Create new user
-    const newUser: User = {
-      id: crypto.randomUUID(),
-      email,
-      name,
-      role,
-      walletAddress: generateWalletAddress(),
-    };
-
-    // Store password separately (in production, this should be hashed)
-    users.push({ ...newUser, password });
-    localStorage.setItem("campusCreditsUsers", JSON.stringify(users));
-
-    // Log in the user
-    setUser(newUser);
-    localStorage.setItem("campusCreditsUser", JSON.stringify(newUser));
-
-    return { success: true };
   };
 
   const login = async (email: string, password: string) => {
-    const usersData = localStorage.getItem("campusCreditsUsers");
-    const users = usersData ? JSON.parse(usersData) : [];
-
-    const foundUser = users.find((u: any) => u.email === email && u.password === password);
-
-    if (!foundUser) {
-      return { success: false, error: "Invalid email or password" };
+    try {
+      console.log("Starting login process");
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      console.log("Firebase auth successful, uid:", cred.user.uid);
+      
+      // Wait briefly to ensure Firestore is updated
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Explicitly fetch user data after successful login
+      let userData = await getUserById(cred.user.uid);
+      console.log("First attempt fetching user data:", userData);
+      
+      // If user data is not found, try fetching by email as fallback
+      if (!userData) {
+        console.log("User data not found by ID, trying email...");
+        userData = await getUserByEmail(email);
+        console.log("Email lookup result:", userData);
+      }
+      
+      if (!userData) {
+        console.error("No user data found for uid:", cred.user.uid);
+        // Create a basic user profile if none exists
+        userData = await saveUser({
+          id: cred.user.uid,
+          email: cred.user.email || email,
+          name: cred.user.displayName || email.split('@')[0],
+          role: "student", // Default role
+          nftId: await generateNftId(),
+          walletAddress: generateWalletAddress(),
+          credits: 0,
+        });
+        console.log("Created new user profile:", userData);
+      }
+      
+      setUser(userData);
+      console.log("User data set in context:", userData);
+      return { success: true, user: userData };
+    } catch (err: any) {
+      console.error("Login error:", err);
+      return { success: false, error: err.message || "Login failed" };
     }
-
-    const { password: _, ...userWithoutPassword } = foundUser;
-    setUser(userWithoutPassword);
-    localStorage.setItem("campusCreditsUser", JSON.stringify(userWithoutPassword));
-
-    return { success: true };
   };
 
-  const resetPassword = async (email: string, newPassword: string) => {
-    const usersData = localStorage.getItem("campusCreditsUsers");
-    const users = usersData ? JSON.parse(usersData) : [];
-
-    const userIndex = users.findIndex((u: any) => u.email === email);
-
-    if (userIndex === -1) {
-      return { success: false, error: "Email not found" };
+  const resetPassword = async (email: string) => {
+    try {
+      // Firebase password reset via email link. For security, we send a reset email.
+      await sendPasswordResetEmail(auth, email);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || "Reset failed" };
     }
+  };
 
-    users[userIndex].password = newPassword;
-    localStorage.setItem("campusCreditsUsers", JSON.stringify(users));
-
-    return { success: true };
+  // Note: In production:
+  // 1. Use Firebase Custom Claims to store admin role (https://firebase.google.com/docs/auth/admin/custom-claims)
+  // 2. Create a Cloud Function to handle admin user creation with proper security
+  // 3. Use Security Rules to restrict Firestore access based on Custom Claims
+  const createUserByAdmin = async (email: string, password: string, name: string, role: User["role"]) => {
+    try {
+      // This uses the same client-side createUser; in production use a callable Cloud Function with admin privileges.
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      const uid = cred.user.uid;
+      
+      const newUser = await saveUser({
+        id: uid,
+        email,
+        name,
+        role,
+        nftId: await generateNftId(),
+        walletAddress: generateWalletAddress(),
+        credits: 0,
+      });
+      
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || "Create user failed" };
+    }
   };
 
   const logout = () => {
-    setUser(null);
-    localStorage.removeItem("campusCreditsUser");
-    navigate("/auth");
+    firebaseSignOut(auth).then(() => {
+      setUser(null);
+      navigate("/auth");
+    });
   };
 
   return (
@@ -115,6 +184,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         user,
         login,
         signup,
+        createUserByAdmin,
         logout,
         resetPassword,
         isAuthenticated: !!user,
@@ -123,8 +193,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       {children}
     </AuthContext.Provider>
   );
-};
-
+ };
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {

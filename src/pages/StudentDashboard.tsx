@@ -3,6 +3,8 @@ import Navbar from "@/components/Navbar";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Coins, TrendingUp, Calendar, Award, ShoppingCart } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import FirebaseConfig from "./firebaseconfig";
 
 const StudentDashboard = () => {
   const { user, logout } = useAuth();
@@ -34,8 +36,7 @@ const StudentDashboard = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <Navbar walletAddress={user?.walletAddress || ""} role="student" onLogout={handleLogout} />
-      
+      <Navbar walletAddress={user?.walletAddress || ""} role={user?.role || "student"} onLogout={handleLogout} />
       <main className="container mx-auto px-4 py-8">
         <div className="mb-8">
           <h2 className="text-3xl font-bold text-foreground">Student Dashboard</h2>
