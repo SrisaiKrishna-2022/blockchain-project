@@ -13,7 +13,7 @@ import { Wallet } from "lucide-react";
 
 const Auth = () => {
   const navigate = useNavigate();
-  const { login, signup, resetPassword, createUserByAdmin, user } = useAuth();
+  const { login, signup, createUserByAdmin, user } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
 
   // Login state
@@ -27,8 +27,7 @@ const Auth = () => {
   const [signupRole, setSignupRole] = useState<User["role"]>("student");
   const [adminExists, setAdminExists] = useState(false);
 
-  // Reset password state
-  const [resetEmail, setResetEmail] = useState("");
+  // (reset removed) 
 
   // Check if admin exists
   useEffect(() => {
@@ -134,21 +133,7 @@ const Auth = () => {
     }
   };
 
-    const handleResetPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-
-    const result = await resetPassword(resetEmail);
-    
-    if (result.success) {
-      toast.success("Password reset email sent. Check your inbox.");
-      setResetEmail("");
-    } else {
-      toast.error(result.error || "Password reset failed");
-    }
-
-    setIsLoading(false);
-  };
+  // reset flow removed: password reset by email is not offered in-app
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
@@ -165,10 +150,9 @@ const Auth = () => {
 
         <Card className="p-6">
           <Tabs defaultValue="login" className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="login">Login</TabsTrigger>
               <TabsTrigger value="signup">Sign Up</TabsTrigger>
-              <TabsTrigger value="reset">Reset</TabsTrigger>
             </TabsList>
 
             <TabsContent value="login">
@@ -260,27 +244,7 @@ const Auth = () => {
               </form>
             </TabsContent>
 
-                        <TabsContent value="reset">
-              <form onSubmit={handleResetPassword} className="space-y-4">
-                <div>
-                  <Label htmlFor="reset-email">Email</Label>
-                  <Input
-                    id="reset-email"
-                    type="email"
-                    placeholder="your@email.com"
-                    value={resetEmail}
-                    onChange={(e) => setResetEmail(e.target.value)}
-                    required
-                  />
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Enter your email address and we'll send you a link to reset your password.
-                </p>
-                <Button type="submit" className="w-full" disabled={isLoading}>
-                  {isLoading ? "Sending..." : "Send Reset Email"}
-                </Button>
-              </form>
-            </TabsContent>
+                        {/* Reset tab removed */}
           </Tabs>
         </Card>
 

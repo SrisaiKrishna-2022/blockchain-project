@@ -5,14 +5,17 @@ import {
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   onAuthStateChanged,
-  sendPasswordResetEmail,
   User as FirebaseUser,
+  updatePassword,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
 } from "firebase/auth";
 import { auth } from "@/pages/firebaseconfig";
 import {
   User,
   saveUser,
   getUserById,
+  getUserByEmail,
   generateNftId,
   generateWalletAddress,
 } from "@/lib/firestore";
@@ -31,8 +34,9 @@ interface AuthContextType {
   // use a Cloud Function with admin privileges to create Auth users without signing out the admin.
   createUserByAdmin: (email: string, password: string, name: string, role: User["role"]) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
-  // With Firebase we send a password reset email (so only email is required)
-  resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
+  // Change password for currently signed-in user. Requires current password.
+  changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  // Password reset via email removed from client API
   isAuthenticated: boolean;
 }
 
@@ -135,13 +139,25 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const resetPassword = async (email: string) => {
+  // resetPassword removed: password reset by email is intentionally not provided in this client
+
+  const changePassword = async (currentPassword: string, newPassword: string) => {
     try {
-      // Firebase password reset via email link. For security, we send a reset email.
-      await sendPasswordResetEmail(auth, email);
+      const fbUser = auth.currentUser;
+      if (!fbUser || !fbUser.email) {
+        return { success: false, error: "No authenticated user" };
+      }
+
+      // Reauthenticate with current password
+      const cred = EmailAuthProvider.credential(fbUser.email, currentPassword);
+      await reauthenticateWithCredential(fbUser, cred);
+
+      // Update password
+      await updatePassword(fbUser, newPassword);
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err.message || "Reset failed" };
+      console.error("changePassword error:", err);
+      return { success: false, error: err.message || "Change password failed" };
     }
   };
 
@@ -186,7 +202,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         signup,
         createUserByAdmin,
         logout,
-        resetPassword,
+        changePassword,
         isAuthenticated: !!user,
       }}
     >
