@@ -64,11 +64,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return () => unsub();
   }, []);
 
-  const generateWalletAddress = () => {
-    return "0x" + Array.from({ length: 40 }, () =>
-      Math.floor(Math.random() * 16).toString(16)
-    ).join("");
-  };
 
   const signup = async (email: string, password: string, name: string, role: User["role"]) => {
     try {
@@ -83,7 +78,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         role,
         nftId: await generateNftId(),
         walletAddress: generateWalletAddress(),
-        credits: 0,
+        credits: role === "student" ? 60 : role === "canteen" ? 100 : 0,
+        showWallet: true,
       };
       
       // Save user with specific ID
@@ -125,7 +121,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           role: "student", // Default role
           nftId: await generateNftId(),
           walletAddress: generateWalletAddress(),
-          credits: 0,
+          credits: 60,
+          showWallet: true,
         });
         console.log("Created new user profile:", userData);
       }
@@ -178,7 +175,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         role,
         nftId: await generateNftId(),
         walletAddress: generateWalletAddress(),
-        credits: 0,
+        credits: role === "student" ? 60 : role === "canteen" ? 100 : 0,
+        showWallet: true,
       });
       
       return { success: true };

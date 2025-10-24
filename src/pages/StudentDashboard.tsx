@@ -2,7 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Coins, TrendingUp, Calendar, Award } from "lucide-react";
+import { Coins, TrendingUp, Award } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -11,7 +11,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Transaction, getUserTransactions } from "@/lib/firestore";
+import { Transaction, getUserTransactions, updateUser } from "@/lib/firestore";
+import { Timestamp } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import FirebaseConfig from "./firebaseconfig";
@@ -24,7 +25,15 @@ const StudentDashboard = () => {
     rollNo: "21CS042",
     department: "Computer Science",
     credits: user?.credits || 156,
-    nftId: "#0042",
+    nftId: user?.nftId || "#0000",
+    walletAddress: user?.walletAddress || "0x0000000000000000000000000000000000000000",
+    showWallet: user?.showWallet ?? true,
+  };
+
+  const formatNft = (nftId: string, walletAddr: string) => {
+    // Make NFT display a bit more complex by combining the nftId and a short wallet fingerprint
+    const fp = walletAddr.replace(/^0x/, '').slice(-8).toUpperCase();
+    return `${nftId}-${fp}`;
   };
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -37,6 +46,18 @@ const StudentDashboard = () => {
 
   const handleLogout = () => {
     logout();
+  };
+
+  const [showWallet, setShowWallet] = useState<boolean>(user?.showWallet ?? true);
+
+  const toggleShowWallet = async () => {
+    if (!user) return;
+    try {
+      await updateUser({ ...user, showWallet: !showWallet });
+      setShowWallet(!showWallet);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   useEffect(() => {
@@ -84,44 +105,22 @@ const StudentDashboard = () => {
                 </div>
                 <p className="mt-2 font-medium">{studentData.name}</p>
                 <p className="text-sm text-muted-foreground">{studentData.department}</p>
+                <p className="mt-2 text-sm font-mono break-words">Wallet: {showWallet ? studentData.walletAddress : <span className="italic text-muted-foreground">Hidden</span>}</p>
+                <div className="mt-2">
+                  <button className="text-sm text-primary underline" onClick={toggleShowWallet}>{showWallet ? 'Hide my wallet' : 'Show my wallet'}</button>
+                </div>
               </Card>
 
               <Card className="p-4">
                 <div className="flex items-center gap-2">
                   <TrendingUp className="h-5 w-5 text-primary" />
-                  <h3 className="font-semibold">NFT ID</h3>
+                  <h3 className="font-semibold">NFT</h3>
                 </div>
-                <p className="mt-2 text-2xl font-bold">{studentData.nftId}</p>
+                <p className="mt-2 text-2xl font-bold">{formatNft(studentData.nftId, studentData.walletAddress)}</p>
+                <p className="text-xs text-muted-foreground mt-1">Full: {studentData.nftId} • Wallet fingerprint: {studentData.walletAddress.slice(-8)}</p>
               </Card>
             </div>
 
-            <Card className="p-6">
-              <div className="mb-4 flex items-center gap-2">
-                <Calendar className="h-5 w-5 text-primary" />
-                <h3 className="text-xl font-semibold text-foreground">Attendance Overview</h3>
-              </div>
-              <div className="space-y-4">
-                {attendance.map((item, index) => (
-                  <div key={index} className="rounded-lg border bg-muted/50 p-4">
-                    <div className="mb-2 flex items-center justify-between">
-                      <h4 className="font-medium text-foreground">{item.subject}</h4>
-                      <Badge variant={item.percentage >= 85 ? "default" : "secondary"}>
-                        {item.percentage}%
-                      </Badge>
-                    </div>
-                    <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                      <span>{item.attended}/{item.total} classes</span>
-                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-background">
-                        <div
-                          className="h-full bg-success transition-all"
-                          style={{ width: `${item.percentage}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
 
             <Card className="p-6">
               <div className="mb-4 flex items-center gap-2">
@@ -145,7 +144,7 @@ const StudentDashboard = () => {
                         <TableCell className="capitalize">{tx.type}</TableCell>
                         <TableCell>{tx.amount} CC</TableCell>
                         <TableCell>
-                          {tx.date ? new Date((tx.date as any).seconds * 1000).toLocaleString() : "-"}
+                          {tx.date ? new Date(((tx.date as unknown) as Timestamp).seconds * 1000).toLocaleString() : "-"}
                         </TableCell>
                       </TableRow>
                     ))}

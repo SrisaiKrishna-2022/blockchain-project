@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Wallet, Coins, Award, ShoppingCart, TrendingUp } from "lucide-react";
+import { Wallet, Coins, Award, ShoppingCart } from "lucide-react";
+import { getAllUsers, getAllTransactions } from "@/lib/firestore";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -32,12 +33,25 @@ const Index = () => {
       title: "Blockchain Based",
       description: "All transactions are secure and verified on the blockchain",
     },
-    {
-      icon: TrendingUp,
-      title: "Track Progress",
-      description: "Monitor your attendance, grades, and reward history in real-time",
-    },
   ];
+
+  const [stats, setStats] = useState({ activeStudents: 0, canteenCount: 0, totalCredits: 0, transactions: 0 });
+
+  useEffect(() => {
+    const loadStats = async () => {
+      try {
+        const users = await getAllUsers();
+        const txs = await getAllTransactions();
+        const activeStudents = users.filter(u => u.role === 'student').length;
+        const canteenCount = users.filter(u => u.role === 'canteen').length;
+        const totalCredits = users.filter(u => u.role !== 'admin').reduce((s, u) => s + (u.credits || 0), 0);
+        setStats({ activeStudents, canteenCount, totalCredits, transactions: txs.length });
+      } catch (err) {
+        console.error('Failed to load stats:', err);
+      }
+    };
+    loadStats();
+  }, []);
 
   const handleGetStarted = () => {
     navigate("/auth");
@@ -81,14 +95,14 @@ const Index = () => {
             Simple, transparent, and rewarding for everyone
           </p>
         </div>
-        <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-8 md:grid-cols-3 lg:grid-cols-3">
           {features.map((feature, index) => (
-            <Card key={index} className="p-6 transition-all hover:shadow-lg">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-primary">
-                <feature.icon className="h-6 w-6 text-white" />
+            <Card key={index} className="p-8 text-center transition-transform hover:shadow-xl hover:scale-[1.02]">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-xl bg-gradient-primary shadow-md">
+                <feature.icon className="h-8 w-8 text-white" />
               </div>
-              <h3 className="mb-2 text-xl font-semibold text-foreground">{feature.title}</h3>
-              <p className="text-sm text-muted-foreground">{feature.description}</p>
+              <h3 className="mb-2 text-lg md:text-xl font-semibold text-foreground">{feature.title}</h3>
+              <p className="mx-auto max-w-xs text-sm text-muted-foreground">{feature.description}</p>
             </Card>
           ))}
         </div>
@@ -97,17 +111,21 @@ const Index = () => {
       {/* Stats */}
       <div className="border-y bg-muted/50">
         <div className="container mx-auto px-4 py-12">
-          <div className="grid gap-8 md:grid-cols-3">
+          <div className="grid gap-8 md:grid-cols-4">
             <div className="text-center">
-              <h3 className="mb-2 text-4xl font-bold text-primary">142</h3>
+              <h3 className="mb-2 text-4xl font-bold text-primary">{stats.activeStudents}</h3>
               <p className="text-muted-foreground">Active Students</p>
             </div>
             <div className="text-center">
-              <h3 className="mb-2 text-4xl font-bold text-success">12,450</h3>
+              <h3 className="mb-2 text-4xl font-bold text-foreground">{stats.canteenCount}</h3>
+              <p className="text-muted-foreground">Canteens</p>
+            </div>
+            <div className="text-center">
+              <h3 className="mb-2 text-4xl font-bold text-success">{stats.totalCredits}</h3>
               <p className="text-muted-foreground">Credits Distributed</p>
             </div>
             <div className="text-center">
-              <h3 className="mb-2 text-4xl font-bold text-accent">3,200</h3>
+              <h3 className="mb-2 text-4xl font-bold text-accent">{stats.transactions}</h3>
               <p className="text-muted-foreground">Transactions</p>
             </div>
           </div>

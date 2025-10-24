@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -14,7 +15,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Wallet, Users, History, Settings } from "lucide-react";
-import { User, Transaction, getAllUsers, getAllTransactions, saveTransaction } from "@/lib/firestore";
+import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { User, Transaction, getAllUsers, getAllTransactions, saveTransaction, deleteAllTransactions, updateUser } from "@/lib/firestore";
+import { Timestamp } from "firebase/firestore";
 import { mintCredits } from "@/lib/contract";
 import { toast } from "sonner";
 
@@ -24,12 +27,17 @@ const AdminDashboard = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedTypes, setSelectedTypes] = useState<Record<string, string>>({});
   // Create user form state
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<User["role"]>("student");
   const [creatingUser, setCreatingUser] = useState(false);
+  // Grade assignment state
+  const [gradeStudentId, setGradeStudentId] = useState<string | null>(null);
+  const [selectedGrade, setSelectedGrade] = useState<string | null>(null);
+  const [showClearDialog, setShowClearDialog] = useState(false);
 
   useEffect(() => {
     if (user?.role !== "admin") {
@@ -61,30 +69,94 @@ const AdminDashboard = () => {
     logout();
   };
 
-  const handleSendRandomCredit = async (toUser: User) => {
+  const handleResetUserCredits = async (targetUser: User) => {
     try {
-      const amount = Math.floor(Math.random() * 50) + 1; // 1..50
-      const reasons = ["Attendance", "Exam Bonus", "Event", "Referral", "Good Behaviour"];
-      const reason = reasons[Math.floor(Math.random() * reasons.length)];
+      if (targetUser.role === "admin") {
+        toast.error("Cannot reset credits for admin users");
+        return;
+      }
 
-      // Attempt to mint credits on-chain (requires admin wallet connected and contract deployed)
-      try {
-        const tx = await mintCredits(toUser.walletAddress, amount, reason);
-        await tx.wait();
-      } catch (err) {
-        // If on-chain fails, continue and still save the transaction locally for demo purposes
-        console.warn("on-chain mint failed, saving transaction to Firestore for demo:", err);
+      const baseline = targetUser.role === "canteen" ? 100 : 60;
+
+      // Update user credits in Firestore
+      await updateUser({ ...targetUser, credits: baseline });
+
+      // Refresh users list
+      const fetchedUsers = await getAllUsers();
+      setUsers(fetchedUsers);
+
+      toast.success(`${targetUser.name}'s credits reset to ${baseline} CC`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to reset user credits");
+    }
+  };
+
+  const handleToggleShowWallet = async (targetUser: User) => {
+    try {
+      const current = !!targetUser.showWallet;
+      await updateUser({ ...targetUser, showWallet: !current });
+      const fetchedUsers = await getAllUsers();
+      setUsers(fetchedUsers);
+      toast.success(`${targetUser.name}'s wallet visibility updated`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to update wallet visibility');
+    }
+  };
+
+  const handleSendCredit = async (toUser: User, selectedType?: string) => {
+    try {
+      if (!selectedType) {
+        toast.error("Please select a credit type");
+        return;
+      }
+
+      if (toUser.id === user?.id) {
+        toast.error("Admins cannot credit themselves");
+        return;
+      }
+
+      if (toUser.role === "admin") {
+        toast.error("Cannot send credits to admins");
+        return;
+      }
+
+      const creditMap: Record<string, { amount: number; reason: string }> = {
+        attend: { amount: 15, reason: "Attend Class" },
+        missed: { amount: -7, reason: "Missed Class" },
+        sport: { amount: 10, reason: "Attended Sport" },
+        event: { amount: 8, reason: "Attended Event" },
+      };
+
+      const selected = creditMap[selectedType];
+      if (!selected) {
+        toast.error("Invalid credit type selected");
+        return;
+      }
+
+      const { amount, reason } = selected;
+
+      // Only attempt on-chain mint for positive amounts
+      if (amount > 0) {
+        try {
+          const tx = await mintCredits(toUser.walletAddress, amount, reason);
+          await tx.wait();
+        } catch (err) {
+          console.warn("on-chain mint failed, saving transaction to Firestore for demo:", err);
+        }
       }
 
       // Save transaction in Firestore and update user credits
       await saveTransaction({
         userId: toUser.id,
         userName: toUser.name,
-        type: "earn",
+        type: amount > 0 ? "earn" : "spend",
         amount,
         reason,
         createdBy: user?.id || "admin",
-      } as any);
+        date: Timestamp.now(),
+      });
 
       // Refresh lists
       const [fetchedUsers, fetchedTransactions] = await Promise.all([
@@ -94,7 +166,7 @@ const AdminDashboard = () => {
       setUsers(fetchedUsers);
       setTransactions(fetchedTransactions.sort((a, b) => b.date.seconds - a.date.seconds).slice(0, 10));
 
-      toast.success(`Sent ${amount} CC to ${toUser.name}`);
+      toast.success(`Sent ${amount} CC (${reason}) to ${toUser.name}`);
     } catch (err) {
       console.error(err);
       toast.error("Failed to send credits");
@@ -130,6 +202,101 @@ const AdminDashboard = () => {
       setCreatingUser(false);
     }
   };
+
+  // Grade mapping: default assumption
+  const gradeMap: Record<string, number> = {
+    A: 40,
+    "A-": 35,
+    B: 30,
+    C: 20,
+    D: 10,
+  };
+
+  const handleAssignGrade = async () => {
+    try {
+      if (!gradeStudentId || !selectedGrade) {
+        toast.error("Please select a student and a grade");
+        return;
+      }
+
+      const toUser = users.find(u => u.id === gradeStudentId);
+      if (!toUser) {
+        toast.error("Selected student not found");
+        return;
+      }
+
+      if (toUser.id === user?.id) {
+        toast.error("Admins cannot assign grades to themselves");
+        return;
+      }
+
+      if (toUser.role === "admin") {
+        toast.error("Cannot assign grade credits to admins");
+        return;
+      }
+
+      const amount = gradeMap[selectedGrade] ?? 0;
+      const reason = `Grade ${selectedGrade}`;
+
+      if (amount > 0) {
+        try {
+          const tx = await mintCredits(toUser.walletAddress, amount, reason);
+          await tx.wait();
+        } catch (err) {
+          console.warn("on-chain mint failed for grade assignment:", err);
+        }
+      }
+
+      await saveTransaction({
+        userId: toUser.id,
+        userName: toUser.name,
+        type: "earn",
+        amount,
+        reason,
+        createdBy: user?.id || "admin",
+        date: Timestamp.now(),
+      });
+
+      // Refresh lists
+      const [fetchedUsers, fetchedTransactions] = await Promise.all([
+        getAllUsers(),
+        getAllTransactions(),
+      ]);
+      setUsers(fetchedUsers);
+      setTransactions(fetchedTransactions.sort((a, b) => b.date.seconds - a.date.seconds).slice(0, 10));
+
+      toast.success(`Assigned ${amount} CC (${reason}) to ${toUser.name}`);
+      setSelectedGrade(null);
+      setGradeStudentId(null);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to assign grade credits");
+    }
+  };
+
+  const handleClearTransactions = async () => {
+    // open modal instead of immediate action
+    setShowClearDialog(true);
+  };
+
+  const confirmClearTransactions = async () => {
+    try {
+      // perform deletion only (do NOT change user credits)
+      await deleteAllTransactions();
+
+      const fetchedTransactions = await getAllTransactions();
+      setTransactions(fetchedTransactions.sort((a, b) => (b.date?.seconds || 0) - (a.date?.seconds || 0)).slice(0, 10));
+
+      toast.success("All transactions cleared (user credits were NOT changed)");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to clear transactions");
+    } finally {
+      setShowClearDialog(false);
+    }
+  };
+
+  const cancelClearTransactions = () => setShowClearDialog(false);
 
   return (
     <div className="min-h-screen bg-background p-4">
@@ -239,24 +406,88 @@ const AdminDashboard = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {users.map((user) => (
-                      <TableRow key={user.id}>
-                        <TableCell>{user.name}</TableCell>
-                        <TableCell>{user.email}</TableCell>
-                        <TableCell className="capitalize">{user.role}</TableCell>
-                        <TableCell>{user.credits} CC</TableCell>
-                        <TableCell className="font-mono">
-                          {user.walletAddress.slice(0, 6)}...{user.walletAddress.slice(-4)}
+                    {users.map((u) => (
+                      <TableRow key={u.id}>
+                        <TableCell>{u.name}</TableCell>
+                        <TableCell>{u.email}</TableCell>
+                        <TableCell className="capitalize">{u.role}</TableCell>
+                        <TableCell>{u.role === 'admin' ? '∞' : `${u.credits} CC`}</TableCell>
+                        <TableCell className="font-mono break-words max-w-xs">
+                          {u.showWallet === false ? (
+                            <span className="italic text-muted-foreground">Hidden</span>
+                          ) : (
+                            u.walletAddress
+                          )}
                               </TableCell>
                               <TableCell>
-                                <Button size="sm" onClick={() => handleSendRandomCredit(user)}>
-                                  Give Random Credits
-                                </Button>
+                                <div className="flex items-center gap-2">
+                                  <Select
+                                    value={selectedTypes[u.id] || ""}
+                                    onValueChange={(val) => setSelectedTypes({ ...selectedTypes, [u.id]: val })}
+                                  >
+                                    <SelectTrigger className="w-44 h-8 text-sm">
+                                      <SelectValue placeholder="Select credit type" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="attend">Attend class (+15 CC)</SelectItem>
+                                      <SelectItem value="missed">Missed class (-7 CC)</SelectItem>
+                                      <SelectItem value="sport">Attended sport (+10 CC)</SelectItem>
+                                      <SelectItem value="event">Attended event (+8 CC)</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                  <Button size="sm" onClick={() => handleSendCredit(u, selectedTypes[u.id])}>
+                                    Send
+                                  </Button>
+                                  <Button size="sm" variant="outline" onClick={() => handleResetUserCredits(u)}>
+                                    Reset
+                                  </Button>
+                                  <Button size="sm" variant="ghost" onClick={() => handleToggleShowWallet(u)}>
+                                    {u.showWallet === false ? 'Show' : 'Hide'}
+                                  </Button>
+                                </div>
                               </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
+              </div>
+            </Card>
+
+            {/* Grade Assignment */}
+            <Card className="p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Settings className="h-5 w-5" />
+                  <h2 className="text-lg font-semibold">Grades</h2>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Assign grade-based credits</p>
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-3 items-end">
+                <div>
+                  <Label>Student</Label>
+                  <select className="w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={gradeStudentId || ""} onChange={(e) => setGradeStudentId(e.target.value || null)}>
+                    <option value="">Select student</option>
+                    {users.filter(u => u.role === 'student').map(s => (
+                      <option key={s.id} value={s.id}>{s.name} ({s.email})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label>Grade</Label>
+                  <select className="w-full rounded-md border bg-transparent px-3 py-2 text-sm" value={selectedGrade || ""} onChange={(e) => setSelectedGrade(e.target.value || null)}>
+                    <option value="">Select grade</option>
+                    <option value="A">A (+40 CC)</option>
+                    <option value="A-">A- (+35 CC)</option>
+                    <option value="B">B (+30 CC)</option>
+                    <option value="C">C (+20 CC)</option>
+                    <option value="D">D (+10 CC)</option>
+                  </select>
+                </div>
+                <div className="mt-2">
+                  <Button onClick={handleAssignGrade}>Assign Grade Credits</Button>
+                </div>
               </div>
             </Card>
 
@@ -266,6 +497,11 @@ const AdminDashboard = () => {
                 <div className="flex items-center gap-2">
                   <History className="h-5 w-5" />
                   <h2 className="text-lg font-semibold">Recent Transactions</h2>
+                </div>
+                <div>
+                  <Button size="sm" variant="destructive" onClick={handleClearTransactions}>
+                    Clear Transactions
+                  </Button>
                 </div>
               </div>
               <div className="rounded-md border">
@@ -298,6 +534,20 @@ const AdminDashboard = () => {
           </div>
         </Card>
       </div>
+      <Dialog open={showClearDialog} onOpenChange={setShowClearDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm deletion</DialogTitle>
+            <DialogDescription>
+              This will permanently delete ALL transactions. User credits will NOT be changed. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={cancelClearTransactions}>Cancel</Button>
+            <Button variant="destructive" onClick={confirmClearTransactions}>Confirm</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

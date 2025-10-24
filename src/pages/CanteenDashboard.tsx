@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { ShoppingCart, DollarSign, CheckCircle, TrendingUp } from "lucide-react";
+import { getAllTransactions, Transaction, updateUser } from "@/lib/firestore";
 import {
   Table,
   TableBody,
@@ -19,34 +20,115 @@ import {
 const CanteenDashboard = () => {
   const { user, logout } = useAuth();
   const [paymentAmount, setPaymentAmount] = useState("");
-  const [studentAddress, setStudentAddress] = useState("");
+  // studentIdentifier holds either a wallet address or a full name depending on identifierType
+  const [studentIdentifier, setStudentIdentifier] = useState("");
+  const [identifierType, setIdentifierType] = useState<'wallet' | 'name'>('wallet');
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
 
-  const stats = [
-    { label: "Today's Sales", value: "428 CC", icon: DollarSign, color: "text-success" },
-    { label: "Transactions", value: "67", icon: ShoppingCart, color: "text-primary" },
-    { label: "Total Collected", value: "12,340 CC", icon: TrendingUp, color: "text-accent" },
+  const items = [
+    { id: "shirt", title: "Shirt", price: 250, file: "shirt.png" },
+    { id: "drink", title: "Drink", price: 20, file: "drink.png" },
+    { id: "book", title: "Book", price: 120, file: "book.png" },
+    { id: "a4", title: "A4 bundle", price: 60, file: "a4_bundle.png" },
   ];
 
-  const recentTransactions = [
-    { id: 1, student: "Alex Johnson", amount: 15, item: "Lunch Combo", time: "12:30 PM" },
-    { id: 2, student: "Sarah Chen", amount: 8, item: "Snacks", time: "11:45 AM" },
-    { id: 3, student: "Michael Kumar", amount: 20, item: "Premium Meal", time: "11:20 AM" },
-    { id: 4, student: "Emily Davis", amount: 5, item: "Coffee", time: "10:50 AM" },
-  ];
+  const [stats, setStats] = useState<{ label: string; value: string; icon: ComponentType<{ className?: string }>; color: string }[]>([]);
+  type RecentTx = { id: string; student: string; amount: number; item: string; time: string };
+  const [recentTransactions, setRecentTransactions] = useState<RecentTx[]>([]);
 
   const handleAcceptPayment = () => {
-    if (!studentAddress || !paymentAmount) {
+    if (!studentIdentifier || !paymentAmount) {
       toast.error("Please fill in all fields");
       return;
     }
-    toast.success(`Payment of ${paymentAmount} CC accepted from ${studentAddress.slice(0, 6)}...${studentAddress.slice(-4)}`);
+    const who = identifierType === 'wallet'
+      ? `${studentIdentifier.slice(0, 6)}...${studentIdentifier.slice(-4)}`
+      : studentIdentifier;
+
+    toast.success(`Payment of ${paymentAmount} CC accepted from ${who}`);
     setPaymentAmount("");
-    setStudentAddress("");
+    setStudentIdentifier("");
+  };
+
+  const handleSelectItem = (itemId: string) => {
+    const it = items.find(i => i.id === itemId);
+    if (!it) return;
+    setSelectedItemId(itemId);
+    setPaymentAmount(String(it.price));
   };
 
   const handleLogout = () => {
     logout();
   };
+
+  const [showWalletLocal, setShowWalletLocal] = useState<boolean>(user?.showWallet ?? true);
+
+  const toggleShowWalletLocal = async () => {
+    if (!user) return;
+    try {
+      await updateUser({ ...user, showWallet: !showWalletLocal });
+      setShowWalletLocal(!showWalletLocal);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const formatNft = (nftId: string | undefined, walletAddr: string | undefined) => {
+    const id = nftId || "#0000";
+    const addr = walletAddr || "0x0000000000000000000000000000000000000000";
+    const fp = addr.replace(/^0x/, '').slice(-8).toUpperCase();
+    return `${id}-${fp}`;
+  };
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const txs = await getAllTransactions();
+        // sort desc by date
+        const sorted = txs.sort((a, b) => (b.date?.seconds || 0) - (a.date?.seconds || 0));
+
+        // compute totals
+        const totalTransactions = txs.length;
+
+        const now = new Date();
+        const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+
+        let todaysSales = 0;
+        let totalCollected = 0;
+
+        txs.forEach((t: Transaction) => {
+          const amount = Number(t.amount) || 0;
+          // consider 'spend' transactions as sales
+          if (t.type === "spend") {
+            totalCollected += Math.abs(amount);
+            const ts = (t.date?.seconds || 0);
+            if (ts >= startOfDay) {
+              todaysSales += Math.abs(amount);
+            }
+          }
+        });
+
+        setStats([
+          { label: "Today's Sales", value: `${todaysSales} CC`, icon: DollarSign, color: 'text-success' },
+          { label: 'Transactions', value: `${totalTransactions}`, icon: ShoppingCart, color: 'text-primary' },
+          { label: 'Total Collected', value: `${totalCollected} CC`, icon: TrendingUp, color: 'text-accent' },
+        ]);
+
+        // map recent txs to display-friendly items (take first 8)
+        setRecentTransactions(sorted.slice(0, 8).map((t: Transaction) => ({
+          id: t.id,
+          student: t.userName,
+          amount: Math.abs(Number(t.amount) || 0),
+          item: t.reason,
+          time: t.date ? new Date(t.date.seconds * 1000).toLocaleString() : '-',
+        })));
+      } catch (err) {
+        console.error("Failed to load canteen stats:", err);
+      }
+    };
+
+    load();
+  }, []);
 
   return (
     <div className="min-h-screen bg-background p-4">
@@ -59,6 +141,10 @@ const CanteenDashboard = () => {
                 <h1 className="text-2xl font-bold">Canteen Dashboard</h1>
               </div>
               <p className="text-muted-foreground">Accept student payments with Campus Credits</p>
+              <p className="text-xs text-muted-foreground mt-1">Wallet: {showWalletLocal && user?.walletAddress ? user.walletAddress : (showWalletLocal ? '-' : 'Hidden')} • NFT: {formatNft(user?.nftId, user?.walletAddress)}</p>
+              <div className="mt-1">
+                <button className="text-sm text-primary underline" onClick={toggleShowWalletLocal}>{showWalletLocal ? 'Hide my wallet' : 'Show my wallet'}</button>
+              </div>
             </div>
             <Button onClick={handleLogout} variant="outline">
               Logout
@@ -88,13 +174,47 @@ const CanteenDashboard = () => {
               <div className="grid gap-6 md:grid-cols-2">
                 <div className="space-y-4">
                   <div>
-                    <Label htmlFor="studentPaymentAddress">Student Wallet Address</Label>
-                    <Input
-                      id="studentPaymentAddress"
-                      placeholder="0x..."
-                      value={studentAddress}
-                      onChange={(e) => setStudentAddress(e.target.value)}
-                    />
+                    <Label htmlFor="identifierType">Identifier</Label>
+                    <div className="mt-2 flex items-center gap-2">
+                      <select
+                        id="identifierType"
+                        className="rounded-md border bg-transparent px-3 py-2 text-sm"
+                        value={identifierType}
+                        onChange={(e) => setIdentifierType(e.target.value as 'wallet' | 'name')}
+                      >
+                        <option value="wallet">Wallet Address</option>
+                        <option value="name">Full Name</option>
+                      </select>
+                    </div>
+
+                    <div className="mt-3">
+                      <Label htmlFor="studentIdentifier">{identifierType === 'wallet' ? 'Student Wallet Address' : 'Student Full Name'}</Label>
+                      <Input
+                        id="studentIdentifier"
+                        placeholder={identifierType === 'wallet' ? '0x...' : 'Full name e.g., John Doe'}
+                        value={studentIdentifier}
+                        onChange={(e) => setStudentIdentifier(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Quick Items</Label>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3">
+                      {items.map((it) => (
+                        <button
+                          key={it.id}
+                          type="button"
+                          onClick={() => { handleSelectItem(it.id); /* keep selection visible */ }}
+                          className={`flex flex-col items-center gap-3 rounded-lg border p-4 text-center hover:shadow-md ${selectedItemId === it.id ? 'ring-2 ring-primary' : ''}`}
+                        >
+                          <img src={`/images/${it.file}`} alt={it.title} className="h-16 w-16 rounded-md object-cover" />
+                          <div>
+                            <div className="font-medium">{it.title}</div>
+                            <div className="text-sm text-muted-foreground">{it.price} CC</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div>
                     <Label htmlFor="paymentAmount">Amount (Campus Credits)</Label>
@@ -113,9 +233,9 @@ const CanteenDashboard = () => {
                 </div>
                 <div className="rounded-lg border-2 border-dashed border-muted-foreground/25 bg-muted/50 p-6">
                   <p className="mb-2 text-sm font-medium text-foreground">QR Code Scanner</p>
-                  <div className="mb-4 flex aspect-square items-center justify-center rounded-lg bg-background">
+                  <div className="mb-4 flex h-32 w-24 items-center justify-center rounded-lg bg-background">
                     <div className="text-center text-muted-foreground">
-                      <ShoppingCart className="mx-auto mb-2 h-12 w-12" />
+                      <ShoppingCart className="mx-auto mb-2 h-10 w-10" />
                       <p className="text-xs">QR scanner would appear here</p>
                     </div>
                   </div>
